@@ -58,57 +58,46 @@ app.post('/api/getEligibleAd', async (req, res) => {
     }
     console.log(`[Maria Ads] Placement status: active`);
     
-    // 2. Fetch all ads
-    const adsSnap = await db.ref('ads').get();
-    if (!adsSnap.exists()) {
-      console.warn('[Maria Ads] No ads found in database.');
+    // 2. Fetch all campaigns (which now contain the ad data directly)
+    const campaignsSnap = await db.ref('campaigns').get();
+    if (!campaignsSnap.exists()) {
+      console.warn('[Maria Ads] No campaigns found in database.');
       return res.status(200).json({ ad: null });
     }
     
-    // 3. Fetch all campaigns ONCE to fix N+1 query performance issue
-    const campaignsSnap = await db.ref('campaigns').get();
-    const campaignsData = campaignsSnap.exists() ? campaignsSnap.val() : {};
-    
-    const ads = adsSnap.val();
+    const campaignsData = campaignsSnap.val();
     let eligibleAds = [];
     let activeAdsCount = 0;
     
-    // 4. Filter for eligible ads
-    for (const id in ads) {
-      const ad = ads[id];
+    // 3. Filter for eligible campaigns (active and containing valid ad data)
+    for (const id in campaignsData) {
+      const camp = campaignsData[id];
       
-      // Skip if ad is missing critical fields or not active
-      if (!ad || ad.status !== 'active' || !ad.campaignId || !ad.destinationUrl) {
+      // Skip if campaign is missing critical fields or not active
+      if (!camp || camp.status !== 'active' || !camp.destinationUrl) {
         continue;
       }
       
       activeAdsCount++;
-      const campaign = campaignsData[ad.campaignId];
-      
-      // Skip if campaign doesn't exist or isn't active
-      if (!campaign || campaign.status !== 'active') {
-        continue;
-      }
       
       eligibleAds.push({
         adId: id,
-        type: ad.type,
-        title: ad.title || '',
-        description: ad.description || '',
-        imageUrl: ad.imageUrl || '',
-        videoUrl: ad.videoUrl || '',
-        destinationUrl: ad.destinationUrl,
-        campaignId: ad.campaignId,
+        type: camp.adType || 'text', // Fallback to text if type missing
+        title: camp.title || '',
+        description: camp.description || '',
+        imageUrl: camp.imageUrl || '',
+        videoUrl: camp.videoUrl || '',
+        destinationUrl: camp.destinationUrl,
+        campaignId: id, // Campaign ID is the Ad ID in the new architecture
         clickToken: id,
         trackingToken: id
       });
     }
     
-    console.log(`[Maria Ads] Total ads found: ${Object.keys(ads).length}`);
-    console.log(`[Maria Ads] Active ads found: ${activeAdsCount}`);
-    console.log(`[Maria Ads] Campaign-active ads found: ${eligibleAds.length}`);
+    console.log(`[Maria Ads] Total campaigns found: ${Object.keys(campaignsData).length}`);
+    console.log(`[Maria Ads] Active campaigns with ad data found: ${eligibleAds.length}`);
     
-    // 5. Select a random ad from eligible pool
+    // 4. Select a random ad from eligible pool
     if (eligibleAds.length > 0) {
       const randomAd = eligibleAds[Math.floor(Math.random() * eligibleAds.length)];
       console.log(`[Maria Ads] Selected ad: ${randomAd.adId}`);
@@ -133,26 +122,18 @@ app.post('/api/recordImpression', async (req, res) => {
   if (!trackingToken) return res.status(400).send("Token required");
   
   try {
-    const adRef = db.ref(`ads/${trackingToken}`);
-    const adSnap = await adRef.get();
+    // In the new architecture, the trackingToken IS the campaignId
+    const campaignRef = db.ref(`campaigns/${trackingToken}`);
+    const campSnap = await campaignRef.get();
     
-    if (adSnap.exists()) {
-      await adRef.transaction((currentData) => {
+    if (campSnap.exists()) {
+      await campaignRef.transaction((currentData) => {
         if (currentData) {
           currentData.impressions = (currentData.impressions || 0) + 1;
         }
         return currentData;
       });
-      
-      const campaignId = adSnap.val().campaignId;
-      if (campaignId) {
-        await db.ref(`campaigns/${campaignId}`).transaction((currentData) => {
-          if (currentData) {
-            currentData.impressions = (currentData.impressions || 0) + 1;
-          }
-          return currentData;
-        });
-      }
+      console.log(`[Maria Ads] Impression recorded for campaign: ${trackingToken}`);
     }
     return res.status(200).send("Impression recorded");
   } catch (error) {
@@ -170,26 +151,18 @@ app.post('/api/recordClick', async (req, res) => {
   if (!clickToken) return res.status(400).send("Token required");
   
   try {
-    const adRef = db.ref(`ads/${clickToken}`);
-    const adSnap = await adRef.get();
+    // In the new architecture, the clickToken IS the campaignId
+    const campaignRef = db.ref(`campaigns/${clickToken}`);
+    const campSnap = await campaignRef.get();
     
-    if (adSnap.exists()) {
-      await adRef.transaction((currentData) => {
+    if (campSnap.exists()) {
+      await campaignRef.transaction((currentData) => {
         if (currentData) {
           currentData.clicks = (currentData.clicks || 0) + 1;
         }
         return currentData;
       });
-      
-      const campaignId = adSnap.val().campaignId;
-      if (campaignId) {
-        await db.ref(`campaigns/${campaignId}`).transaction((currentData) => {
-          if (currentData) {
-            currentData.clicks = (currentData.clicks || 0) + 1;
-          }
-          return currentData;
-        });
-      }
+      console.log(`[Maria Ads] Click recorded for campaign: ${clickToken}`);
     }
     return res.status(200).send("Click recorded");
   } catch (error) {
